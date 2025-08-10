@@ -10,17 +10,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import redis.asyncio as aioredis
 
 from shared_models.database import get_db
-from shared_models.models import User, Meeting, Transcription, MeetingSession
+from shared_models.models import User, Meeting, Transcription, MeetingSession, MeetingSummary, ActionItem, MeetingInsight
 from shared_models.schemas import (
     HealthResponse,
     MeetingResponse,
     MeetingListResponse,
     TranscriptionResponse,
+    TranscriptionWithSummaryResponse,
     Platform,
     TranscriptionSegment,
     MeetingUpdate,
     MeetingCreate,
-    MeetingStatus
+    MeetingStatus,
+    MeetingSummaryResponse,
+    MeetingSummaryCreate,
+    MeetingSummaryUpdate,
+    ActionItemResponse,
+    ActionItemCreate,
+    ActionItemUpdate,
+    MeetingInsightResponse,
+    SummaryGenerationRequest,
+    SummaryGenerationResponse
 )
 
 from config import IMMUTABILITY_THRESHOLD
@@ -207,6 +217,365 @@ async def get_meetings(
     meetings = result.scalars().all()
     return MeetingListResponse(meetings=[MeetingResponse.from_orm(m) for m in meetings])
     
+@router.get("/transcripts/summary/{native_meeting_id}",
+            response_model=TranscriptionWithSummaryResponse,
+            summary="Get transcript summary for a specific meeting by native ID",
+            dependencies=[Depends(get_current_user)])
+async def get_transcript_summary(
+    native_meeting_id: str,
+    request: Request,  # Added for redis_client access
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retrieves the transcript and summary for a meeting by native meeting ID.
+    Searches across all platforms for the most recent meeting with this ID.
+    """
+    logger.debug(f"[API] User {current_user.id} requested summary for native meeting ID {native_meeting_id}")
+    
+    # Find the most recent meeting with this native ID across all platforms
+    stmt_meeting = select(Meeting).where(
+        Meeting.user_id == current_user.id,
+        Meeting.platform_specific_id == native_meeting_id
+    ).order_by(Meeting.created_at.desc())
+
+    result_meeting = await db.execute(stmt_meeting)
+    meeting = result_meeting.scalars().first()
+    
+    if not meeting:
+        logger.warning(f"[API] No meeting found for user {current_user.id}, native ID '{native_meeting_id}'")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Meeting not found for native ID {native_meeting_id}"
+        )
+
+    internal_meeting_id = meeting.id
+    redis_c = getattr(request.app.state, 'redis_client', None)
+
+    # Get transcript segments
+    sorted_segments = await _get_full_transcript_segments(internal_meeting_id, db, redis_c)
+    
+    # Get summary data
+    stmt_summary = select(MeetingSummary).where(
+        MeetingSummary.meeting_id == internal_meeting_id
+    ).order_by(MeetingSummary.created_at.desc())
+    
+    result_summary = await db.execute(stmt_summary)
+    summary = result_summary.scalars().first()
+    
+    # Get action items
+    stmt_action_items = select(ActionItem).where(
+        ActionItem.meeting_id == internal_meeting_id
+    ).order_by(ActionItem.created_at.asc())
+    
+    result_action_items = await db.execute(stmt_action_items)
+    action_items = result_action_items.scalars().all()
+    
+    logger.info(f"[API Meet {internal_meeting_id}] Retrieved {len(sorted_segments)} segments, summary: {'yes' if summary else 'no'}, action items: {len(action_items)}")
+    
+    # Build response
+    meeting_details = MeetingResponse.from_orm(meeting)
+    response_data = meeting_details.dict()
+    response_data["segments"] = sorted_segments
+    
+    # Manually construct summary response to avoid lazy loading issues
+    if summary:
+        summary_response = MeetingSummaryResponse(
+            id=summary.id,
+            meeting_id=summary.meeting_id,
+            summary_data=summary.summary_data or {},
+            overview=summary.overview,
+            subject_line=summary.subject_line,
+            sentiment=summary.sentiment,
+            key_points=summary.key_points,
+            decisions=summary.decisions,
+            questions=summary.questions,
+            challenges=summary.challenges,
+            participants=summary.participants,
+            created_at=summary.created_at,
+            updated_at=summary.updated_at,
+            action_items=[ActionItemResponse.from_orm(item) for item in action_items],
+            insights=None  # We'll handle insights separately if needed
+        )
+        response_data["summary"] = summary_response
+    else:
+        response_data["summary"] = None
+        
+    response_data["action_items"] = [ActionItemResponse.from_orm(item) for item in action_items]
+    
+    return TranscriptionWithSummaryResponse(**response_data)
+
+
+@router.post("/transcripts/summary/{native_meeting_id}",
+             response_model=SummaryGenerationResponse,
+             summary="Generate or fetch meeting summary by native ID",
+             dependencies=[Depends(get_current_user)])
+async def fetch_transcript_summary(
+    native_meeting_id: str,
+    generation_request: SummaryGenerationRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Generates a new summary or returns existing summary for a meeting by native ID.
+    This endpoint integrates with the summarization service to create structured summaries.
+    """
+    logger.info(f"[API] User {current_user.id} requesting summary generation for native meeting ID {native_meeting_id}")
+    
+    # Find the most recent meeting with this native ID
+    stmt_meeting = select(Meeting).where(
+        Meeting.user_id == current_user.id,
+        Meeting.platform_specific_id == native_meeting_id
+    ).order_by(Meeting.created_at.desc())
+
+    result_meeting = await db.execute(stmt_meeting)
+    meeting = result_meeting.scalars().first()
+    
+    if not meeting:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Meeting not found for native ID {native_meeting_id}"
+        )
+
+    internal_meeting_id = meeting.id
+    
+    # Check if summary already exists
+    stmt_existing_summary = select(MeetingSummary).where(
+        MeetingSummary.meeting_id == internal_meeting_id
+    ).order_by(MeetingSummary.created_at.desc())
+    
+    result_existing = await db.execute(stmt_existing_summary)
+    existing_summary = result_existing.scalars().first()
+    
+    if existing_summary and not generation_request.force_regenerate:
+        logger.info(f"[API] Returning existing summary for meeting {internal_meeting_id}")
+        return SummaryGenerationResponse(
+            summary=MeetingSummaryResponse.from_orm(existing_summary),
+            generated=False,
+            message="Existing summary returned. Use force_regenerate=true to create a new one."
+        )
+    
+    # Get transcript data for summarization
+    redis_c = getattr(request.app.state, 'redis_client', None)
+    sorted_segments = await _get_full_transcript_segments(internal_meeting_id, db, redis_c)
+    
+    if not sorted_segments:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No transcript data available for this meeting"
+        )
+    
+    # Convert segments to text for summarization
+    transcript_text = "\n".join([
+        f"[{getattr(segment, 'start_time', 'N/A')}-{getattr(segment, 'end_time', 'N/A')}] {getattr(segment, 'speaker', 'Unknown')}: {getattr(segment, 'text', '')}"
+        for segment in sorted_segments
+    ])
+    
+    # Prepare meeting metadata
+    meeting_metadata = {
+        "meeting_id": str(internal_meeting_id),
+        "meeting_date": meeting.start_time.strftime('%Y-%m-%d') if meeting.start_time else None,
+        "participants": meeting.data.get('participants', []) if meeting.data else [],
+        "platform": meeting.platform,
+        "native_meeting_id": meeting.platform_specific_id
+    }
+    
+    try:
+        # Import and use summarizer (assuming it's available in the environment)
+        from workflows.summarize import Summarizer
+        
+        summarizer = Summarizer()
+        summary_result = summarizer.summarize(transcript_text, meeting_metadata)
+        
+        if not summary_result:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to generate summary"
+            )
+        
+        # Create or update summary in database
+        if existing_summary and generation_request.force_regenerate:
+            # Update existing summary
+            existing_summary.summary_data = summary_result
+            existing_summary.overview = summary_result.get('overview', [])
+            existing_summary.subject_line = summary_result.get('subject_line')
+            existing_summary.sentiment = summary_result.get('sentiment')
+            existing_summary.key_points = summary_result.get('key_points', [])
+            existing_summary.decisions = summary_result.get('decisions', [])
+            existing_summary.questions = summary_result.get('questions', [])
+            existing_summary.challenges = summary_result.get('challenges', [])
+            existing_summary.participants = summary_result.get('participants', [])
+            existing_summary.updated_at = datetime.utcnow()
+            summary_obj = existing_summary
+        else:
+            # Create new summary
+            summary_obj = MeetingSummary(
+                meeting_id=internal_meeting_id,
+                summary_data=summary_result,
+                overview=summary_result.get('overview', []),
+                subject_line=summary_result.get('subject_line'),
+                sentiment=summary_result.get('sentiment'),
+                key_points=summary_result.get('key_points', []),
+                decisions=summary_result.get('decisions', []),
+                questions=summary_result.get('questions', []),
+                challenges=summary_result.get('challenges', []),
+                participants=summary_result.get('participants', [])
+            )
+            db.add(summary_obj)
+        
+        # Handle action items
+        action_items_data = summary_result.get('action_items', [])
+        if action_items_data:
+            # Remove existing action items if regenerating
+            if generation_request.force_regenerate:
+                stmt_delete_actions = select(ActionItem).where(ActionItem.meeting_id == internal_meeting_id)
+                result_existing_actions = await db.execute(stmt_delete_actions)
+                existing_actions = result_existing_actions.scalars().all()
+                for action in existing_actions:
+                    await db.delete(action)
+            
+            # Create new action items
+            for item_data in action_items_data:
+                if isinstance(item_data, dict):
+                    action_item = ActionItem(
+                        meeting_id=internal_meeting_id,
+                        task=item_data.get('task', ''),
+                        owner=item_data.get('owner'),
+                        due_date=datetime.strptime(item_data['due_date'], '%Y-%m-%d').date() if item_data.get('due_date') else None,
+                        description=f"Generated from meeting summary"
+                    )
+                    db.add(action_item)
+        
+        # Generate insights if requested
+        if generation_request.include_insights:
+            word_count = len(transcript_text.split()) if transcript_text else 0
+            
+            insight_obj = MeetingInsight(
+                meeting_id=internal_meeting_id,
+                word_count=word_count,
+                total_speaking_time=sum([
+                    int(getattr(segment, 'end_time', 0)) - int(getattr(segment, 'start_time', 0))
+                    for segment in sorted_segments
+                    if getattr(segment, 'start_time', None) and getattr(segment, 'end_time', None)
+                ]),
+                sentiment_scores={"overall": summary_result.get('sentiment', 'neutral')},
+                topics_discussed=summary_result.get('key_points', [])
+            )
+            db.add(insight_obj)
+        
+        await db.commit()
+        await db.refresh(summary_obj)
+        
+        logger.info(f"[API] Successfully generated summary for meeting {internal_meeting_id}")
+        
+        return SummaryGenerationResponse(
+            summary=MeetingSummaryResponse.from_orm(summary_obj),
+            generated=True,
+            message="Summary generated successfully"
+        )
+        
+    except ImportError:
+        logger.error("[API] Summarizer not available - workflows.summarize module not found")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Summarization service not available"
+        )
+    except Exception as e:
+        logger.error(f"[API] Failed to generate summary: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate summary: {str(e)}"
+        )
+
+@router.post("/internal/summaries/{native_meeting_id}",
+             summary="[Internal] Save pre-generated summary data",
+             include_in_schema=False)
+async def save_pre_generated_summary(
+    native_meeting_id: str,
+    summary_data: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Internal endpoint for workflows to save pre-generated summary data.
+    This endpoint accepts already-generated summary data and saves it to the database.
+    """
+    logger.info(f"[Internal API] Saving pre-generated summary for native meeting ID {native_meeting_id}")
+    
+    # Find the most recent meeting with this native ID
+    stmt_meeting = select(Meeting).where(
+        Meeting.user_id == current_user.id,
+        Meeting.platform_specific_id == native_meeting_id
+    ).order_by(Meeting.created_at.desc())
+
+    result_meeting = await db.execute(stmt_meeting)
+    meeting = result_meeting.scalars().first()
+    
+    if not meeting:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Meeting not found for native ID {native_meeting_id}"
+        )
+
+    internal_meeting_id = meeting.id
+    
+    # Check if summary already exists
+    stmt_existing_summary = select(MeetingSummary).where(
+        MeetingSummary.meeting_id == internal_meeting_id
+    ).order_by(MeetingSummary.created_at.desc())
+    
+    result_existing = await db.execute(stmt_existing_summary)
+    existing_summary = result_existing.scalars().first()
+    
+    if existing_summary:
+        # Update existing summary
+        existing_summary.summary_data = summary_data
+        existing_summary.overview = summary_data.get('overview', [])
+        existing_summary.key_points = summary_data.get('key_points', [])
+        existing_summary.decisions = summary_data.get('decisions', [])
+        existing_summary.updated_at = datetime.utcnow()
+        summary_obj = existing_summary
+    else:
+        # Create new summary
+        summary_obj = MeetingSummary(
+            meeting_id=internal_meeting_id,
+            summary_data=summary_data,
+            overview=summary_data.get('overview', []),
+            key_points=summary_data.get('key_points', []),
+            decisions=summary_data.get('decisions', [])
+        )
+        db.add(summary_obj)
+    
+    # Handle action items
+    action_items_data = summary_data.get('action_items', [])
+    if action_items_data:
+        # Remove existing action items
+        stmt_delete_actions = select(ActionItem).where(ActionItem.meeting_id == internal_meeting_id)
+        result_existing_actions = await db.execute(stmt_delete_actions)
+        existing_actions = result_existing_actions.scalars().all()
+        for action in existing_actions:
+            await db.delete(action)
+        
+        # Create new action items
+        for item_data in action_items_data:
+            if isinstance(item_data, dict):
+                action_item = ActionItem(
+                    meeting_id=internal_meeting_id,
+                    task=item_data.get('task', ''),
+                    owner=item_data.get('owner'),
+                    due_date=datetime.strptime(item_data['due_date'], '%Y-%m-%d').date() if item_data.get('due_date') else None,
+                    description=f"Generated from meeting summary"
+                )
+                db.add(action_item)
+    
+    await db.commit()
+    await db.refresh(summary_obj)
+    
+    logger.info(f"[Internal API] Successfully saved pre-generated summary for meeting {internal_meeting_id}")
+    
+    return {"message": "Summary saved successfully", "summary_id": summary_obj.id}
+
 @router.get("/transcripts/{platform}/{native_meeting_id}",
             response_model=TranscriptionResponse,
             summary="Get transcript for a specific meeting by platform and native ID",
@@ -329,6 +698,259 @@ async def ws_authorize_subscribe(
         })
 
     return WsAuthorizeSubscribeResponse(authorized=authorized, errors=errors, user_id=current_user.id)
+
+
+# --- Summary and Action Items Management Endpoints ---
+
+@router.get("/summaries/{meeting_id}",
+            response_model=MeetingSummaryResponse,
+            summary="Get summary for a specific meeting by meeting ID",
+            dependencies=[Depends(get_current_user)])
+async def get_meeting_summary_by_id(
+    meeting_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get the most recent summary for a specific meeting ID."""
+    # Verify meeting belongs to user
+    stmt_meeting = select(Meeting).where(
+        Meeting.id == meeting_id,
+        Meeting.user_id == current_user.id
+    )
+    result_meeting = await db.execute(stmt_meeting)
+    meeting = result_meeting.scalars().first()
+    
+    if not meeting:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Meeting not found"
+        )
+    
+    # Get summary
+    stmt_summary = select(MeetingSummary).where(
+        MeetingSummary.meeting_id == meeting_id
+    ).order_by(MeetingSummary.created_at.desc())
+    
+    result_summary = await db.execute(stmt_summary)
+    summary = result_summary.scalars().first()
+    
+    if not summary:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No summary found for this meeting"
+        )
+    
+    return MeetingSummaryResponse.from_orm(summary)
+
+@router.put("/summaries/{summary_id}",
+            response_model=MeetingSummaryResponse,
+            summary="Update a meeting summary",
+            dependencies=[Depends(get_current_user)])
+async def update_meeting_summary(
+    summary_id: int,
+    summary_update: MeetingSummaryUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update an existing meeting summary."""
+    # Get summary and verify ownership
+    stmt = select(MeetingSummary).join(Meeting).where(
+        MeetingSummary.id == summary_id,
+        Meeting.user_id == current_user.id
+    )
+    result = await db.execute(stmt)
+    summary = result.scalars().first()
+    
+    if not summary:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Summary not found"
+        )
+    
+    # Update fields
+    update_data = summary_update.dict(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(summary, field, value)
+    
+    summary.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(summary)
+    
+    return MeetingSummaryResponse.from_orm(summary)
+
+@router.get("/action-items",
+            response_model=List[ActionItemResponse],
+            summary="Get all action items for the current user",
+            dependencies=[Depends(get_current_user)])
+async def get_user_action_items(
+    status: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all action items for the current user, optionally filtered by status."""
+    stmt = select(ActionItem).join(Meeting).where(
+        Meeting.user_id == current_user.id
+    )
+    
+    if status:
+        stmt = stmt.where(ActionItem.status == status)
+    
+    stmt = stmt.order_by(ActionItem.created_at.desc())
+    
+    result = await db.execute(stmt)
+    action_items = result.scalars().all()
+    
+    return [ActionItemResponse.from_orm(item) for item in action_items]
+
+@router.get("/meetings/{meeting_id}/action-items",
+            response_model=List[ActionItemResponse],
+            summary="Get action items for a specific meeting",
+            dependencies=[Depends(get_current_user)])
+async def get_meeting_action_items(
+    meeting_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all action items for a specific meeting."""
+    # Verify meeting belongs to user
+    stmt_meeting = select(Meeting).where(
+        Meeting.id == meeting_id,
+        Meeting.user_id == current_user.id
+    )
+    result_meeting = await db.execute(stmt_meeting)
+    meeting = result_meeting.scalars().first()
+    
+    if not meeting:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Meeting not found"
+        )
+    
+    # Get action items
+    stmt = select(ActionItem).where(
+        ActionItem.meeting_id == meeting_id
+    ).order_by(ActionItem.created_at.asc())
+    
+    result = await db.execute(stmt)
+    action_items = result.scalars().all()
+    
+    return [ActionItemResponse.from_orm(item) for item in action_items]
+
+@router.post("/meetings/{meeting_id}/action-items",
+             response_model=ActionItemResponse,
+             summary="Create a new action item for a meeting",
+             dependencies=[Depends(get_current_user)])
+async def create_action_item(
+    meeting_id: int,
+    action_item: ActionItemCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Create a new action item for a meeting."""
+    # Verify meeting belongs to user
+    stmt_meeting = select(Meeting).where(
+        Meeting.id == meeting_id,
+        Meeting.user_id == current_user.id
+    )
+    result_meeting = await db.execute(stmt_meeting)
+    meeting = result_meeting.scalars().first()
+    
+    if not meeting:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Meeting not found"
+        )
+    
+    # Create action item
+    action_item_data = action_item.dict()
+    if action_item_data.get('due_date'):
+        action_item_data['due_date'] = datetime.strptime(action_item_data['due_date'], '%Y-%m-%d').date()
+    
+    db_action_item = ActionItem(
+        meeting_id=meeting_id,
+        **action_item_data
+    )
+    
+    db.add(db_action_item)
+    await db.commit()
+    await db.refresh(db_action_item)
+    
+    return ActionItemResponse.from_orm(db_action_item)
+
+@router.put("/action-items/{action_item_id}",
+            response_model=ActionItemResponse,
+            summary="Update an action item",
+            dependencies=[Depends(get_current_user)])
+async def update_action_item(
+    action_item_id: int,
+    action_item_update: ActionItemUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update an existing action item."""
+    # Get action item and verify ownership
+    stmt = select(ActionItem).join(Meeting).where(
+        ActionItem.id == action_item_id,
+        Meeting.user_id == current_user.id
+    )
+    result = await db.execute(stmt)
+    action_item = result.scalars().first()
+    
+    if not action_item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Action item not found"
+        )
+    
+    # Update fields
+    update_data = action_item_update.dict(exclude_unset=True)
+    
+    # Handle date conversion
+    if 'due_date' in update_data and update_data['due_date']:
+        update_data['due_date'] = datetime.strptime(update_data['due_date'], '%Y-%m-%d').date()
+    
+    # Handle completed status
+    if update_data.get('status') == 'completed' and not action_item.completed_at:
+        update_data['completed_at'] = datetime.utcnow()
+    elif update_data.get('status') != 'completed' and action_item.completed_at:
+        update_data['completed_at'] = None
+    
+    for field, value in update_data.items():
+        setattr(action_item, field, value)
+    
+    action_item.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(action_item)
+    
+    return ActionItemResponse.from_orm(action_item)
+
+@router.delete("/action-items/{action_item_id}",
+              summary="Delete an action item",
+              dependencies=[Depends(get_current_user)])
+async def delete_action_item(
+    action_item_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete an action item."""
+    # Get action item and verify ownership
+    stmt = select(ActionItem).join(Meeting).where(
+        ActionItem.id == action_item_id,
+        Meeting.user_id == current_user.id
+    )
+    result = await db.execute(stmt)
+    action_item = result.scalars().first()
+    
+    if not action_item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Action item not found"
+        )
+    
+    await db.delete(action_item)
+    await db.commit()
+    
+    return {"message": "Action item deleted successfully"}
 
 
 @router.get("/internal/transcripts/{meeting_id}",

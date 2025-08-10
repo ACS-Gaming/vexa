@@ -157,7 +157,7 @@ download-model:
 	@echo "---> Ensuring websockets is up to date..."
 	@. .venv/bin/activate && pip install --upgrade websockets
 	@echo "---> Downloading Whisper model (this may take a while)..."
-	@. .venv/bin/activate && python download_model.py
+	@python3 download_model.py
 
 # Build the standalone vexa-bot image
 # Uses BOT_IMAGE_NAME from .env if available, otherwise falls back to default
@@ -333,11 +333,12 @@ migrate-or-init: check_docker
 		echo "STATE: Legacy (non-Alembic) database detected."; \
 		echo "ACTION: Stamping at 'base' and migrating to 'head' to bring it under Alembic control..."; \
 		docker compose exec -T transcription-collector alembic -c /app/alembic.ini stamp base; \
+		docker compose exec -T transcription-collector alembic -c /app/alembic.ini stamp base; \
 		$(MAKE) migrate; \
 	else \
 		echo "STATE: Fresh, empty database detected."; \
 		echo "ACTION: Creating schema directly from models and stamping at revision dc59a1c03d1f..."; \
-		docker compose exec -T transcription-collector python -c "import asyncio; from shared_models.database import init_db; asyncio.run(init_db())"; \
+		docker compose exec -T transcription-collector python3 -c "import asyncio; from shared_models.database import init_db; asyncio.run(init_db())"; \
 		docker compose exec -T transcription-collector alembic -c /app/alembic.ini stamp dc59a1c03d1f; \
 	fi; \
 	echo "---> Smart database migration/initialization complete!"
@@ -373,11 +374,12 @@ makemigrations: check_docker
 		exit 1; \
 	fi
 	@docker compose exec -T transcription-collector alembic -c /app/alembic.ini revision --autogenerate -m "$(M)"
+	@docker compose exec -T transcription-collector alembic -c /app/alembic.ini revision --autogenerate -m "$(M)"
 
 # Initialize the database (first time setup) - creates tables and stamps with latest revision
 init-db: check_docker
 	@echo "---> Initializing database and stamping with Alembic..."
-	docker compose run --rm transcription-collector python -c "import asyncio; from shared_models.database import init_db; asyncio.run(init_db())"
+	docker compose run --rm transcription-collector python3 -c "import asyncio; from shared_models.database import init_db; asyncio.run(init_db())"
 	docker compose run --rm transcription-collector alembic -c /app/alembic.ini stamp head
 	@echo "---> Database initialized and stamped."
 

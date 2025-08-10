@@ -598,6 +598,114 @@ class BotStatusResponse(BaseModel):
     running_bots: List[BotStatus]
 # --- END Bot Status Schemas ---
 
+# --- Summary and Action Items Schemas ---
+
+class ActionItemBase(BaseModel):
+    task: str = Field(..., description="The action item task description")
+    description: Optional[str] = Field(None, description="Additional details about the task")
+    owner: Optional[str] = Field(None, description="Name or identifier of the person responsible")
+    assignee_email: Optional[str] = Field(None, description="Email of the assignee")
+    due_date: Optional[str] = Field(None, description="Due date in YYYY-MM-DD format")
+    priority: Optional[str] = Field("medium", description="Priority level: high, medium, low")
+    status: Optional[str] = Field("pending", description="Status: pending, in_progress, completed, cancelled")
+
+class ActionItemCreate(ActionItemBase):
+    pass
+
+class ActionItemUpdate(BaseModel):
+    task: Optional[str] = None
+    description: Optional[str] = None
+    owner: Optional[str] = None
+    assignee_email: Optional[str] = None
+    due_date: Optional[str] = None
+    priority: Optional[str] = None
+    status: Optional[str] = None
+    completed_at: Optional[datetime] = None
+
+class ActionItemResponse(ActionItemBase):
+    id: int
+    meeting_id: int
+    summary_id: Optional[int] = None
+    completed_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        orm_mode = True
+
+class MeetingInsightBase(BaseModel):
+    total_speaking_time: Optional[int] = Field(None, description="Total speaking time in seconds")
+    participant_speaking_times: Optional[Dict[str, int]] = Field(None, description="Speaking time per participant")
+    word_count: Optional[int] = Field(None, description="Total word count in transcript")
+    sentiment_scores: Optional[Dict[str, Any]] = Field(None, description="Detailed sentiment analysis")
+    topics_discussed: Optional[List[str]] = Field(None, description="List of topics discussed")
+    meeting_effectiveness_score: Optional[float] = Field(None, description="Meeting effectiveness score 0-100")
+    engagement_metrics: Optional[Dict[str, Any]] = Field(None, description="Various engagement metrics")
+
+class MeetingInsightResponse(MeetingInsightBase):
+    id: int
+    meeting_id: int
+    summary_id: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        orm_mode = True
+
+class MeetingSummaryBase(BaseModel):
+    overview: Optional[List[str]] = Field(None, description="3-5 bullet points summarizing main themes")
+    subject_line: Optional[str] = Field(None, description="Concise email subject line for the summary")
+    sentiment: Optional[str] = Field(None, description="Overall meeting sentiment: positive, negative, neutral")
+    key_points: Optional[List[str]] = Field(None, description="Key points discussed")
+    decisions: Optional[List[str]] = Field(None, description="Decisions made during the meeting")
+    questions: Optional[List[str]] = Field(None, description="Questions raised during the meeting")
+    challenges: Optional[List[str]] = Field(None, description="Challenges or blockers identified")
+    participants: Optional[List[str]] = Field(None, description="List of meeting participants")
+
+class MeetingSummaryCreate(MeetingSummaryBase):
+    summary_data: Dict[str, Any] = Field(..., description="Complete LLM response data")
+
+class MeetingSummaryUpdate(BaseModel):
+    overview: Optional[List[str]] = None
+    subject_line: Optional[str] = None
+    sentiment: Optional[str] = None
+    key_points: Optional[List[str]] = None
+    decisions: Optional[List[str]] = None
+    questions: Optional[List[str]] = None
+    challenges: Optional[List[str]] = None
+    participants: Optional[List[str]] = None
+    summary_data: Optional[Dict[str, Any]] = None
+
+class MeetingSummaryResponse(MeetingSummaryBase):
+    id: int
+    meeting_id: int
+    summary_data: Dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+    action_items: List[ActionItemResponse] = []
+    insights: Optional[MeetingInsightResponse] = None
+
+    class Config:
+        orm_mode = True
+
+# Enhanced TranscriptionResponse that includes summary data
+class TranscriptionWithSummaryResponse(TranscriptionResponse):
+    summary: Optional[MeetingSummaryResponse] = Field(None, description="Meeting summary if available")
+    action_items: List[ActionItemResponse] = Field(default_factory=list, description="Action items from the meeting")
+
+# Summary generation request
+class SummaryGenerationRequest(BaseModel):
+    force_regenerate: bool = Field(False, description="Force regeneration even if summary exists")
+    include_insights: bool = Field(True, description="Generate meeting insights along with summary")
+
+# Summary generation response
+class SummaryGenerationResponse(BaseModel):
+    summary: MeetingSummaryResponse
+    generated: bool = Field(..., description="Whether a new summary was generated or existing one returned")
+    message: str = Field(..., description="Status message")
+
+# --- END Summary and Action Items Schemas --- 
+
 # --- Analytics Schemas ---
 class UserTableResponse(BaseModel):
     """User data for analytics table - excludes sensitive fields"""

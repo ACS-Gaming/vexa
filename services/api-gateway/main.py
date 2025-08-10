@@ -16,11 +16,14 @@ from datetime import datetime
 # Import schemas for documentation
 from shared_models.schemas import (
     MeetingCreate, MeetingResponse, MeetingListResponse, MeetingDataUpdate, # Updated/Added Schemas
-    TranscriptionResponse, TranscriptionSegment,
+    TranscriptionResponse, TranscriptionSegment, TranscriptionWithSummaryResponse,
     UserCreate, UserResponse, TokenResponse, UserDetailResponse, # Admin Schemas
     ErrorResponse,
     Platform, # Import Platform enum for path parameters
-    BotStatusResponse # ADDED: Import response model for documentation
+    BotStatusResponse, # ADDED: Import response model for documentation
+    MeetingSummaryResponse, MeetingSummaryCreate, MeetingSummaryUpdate,
+    ActionItemResponse, ActionItemCreate, ActionItemUpdate,
+    MeetingInsightResponse, SummaryGenerationRequest, SummaryGenerationResponse
 )
 
 load_dotenv()
@@ -292,6 +295,40 @@ async def get_meetings_proxy(request: Request):
     url = f"{TRANSCRIPTION_COLLECTOR_URL}/meetings"
     return await forward_request(app.state.http_client, "GET", url, request)
 
+# --- Summary and Action Items Routes (moved before generic transcript route) ---
+@app.get("/transcripts/summary/{native_meeting_id}",
+        tags=["Summaries"],
+        summary="Get transcript summary for a meeting",
+        description="Retrieves the transcript and AI-generated summary for a meeting by native ID. Searches across all platforms for the most recent meeting.",
+        response_model=TranscriptionWithSummaryResponse,
+        dependencies=[Depends(api_key_scheme)])
+async def get_transcript_summary_proxy(native_meeting_id: str, request: Request):
+    """Forward request to Transcription Collector to get transcript with summary."""
+    url = f"{TRANSCRIPTION_COLLECTOR_URL}/transcripts/summary/{native_meeting_id}"
+    return await forward_request(app.state.http_client, "GET", url, request)
+
+@app.post("/transcripts/summary/{native_meeting_id}",
+         tags=["Summaries"],
+         summary="Generate or fetch meeting summary",
+         description="Generates a new AI summary or returns existing summary for a meeting by native ID. Integrates with the summarization service.",
+         response_model=SummaryGenerationResponse,
+         dependencies=[Depends(api_key_scheme)],
+         openapi_extra={
+             "requestBody": {
+                 "content": {
+                     "application/json": {
+                         "schema": SummaryGenerationRequest.schema()
+                     }
+                 },
+                 "required": True,
+                 "description": "Summary generation options (force regeneration, include insights, etc.)"
+             },
+         })
+async def generate_transcript_summary_proxy(native_meeting_id: str, request: Request):
+    """Forward request to Transcription Collector to generate or fetch summary."""
+    url = f"{TRANSCRIPTION_COLLECTOR_URL}/transcripts/summary/{native_meeting_id}"
+    return await forward_request(app.state.http_client, "POST", url, request)
+
 @app.get("/transcripts/{platform}/{native_meeting_id}",
         tags=["Transcriptions"],
         summary="Get transcript for a specific meeting",
@@ -340,6 +377,162 @@ async def delete_meeting_proxy(platform: Platform, native_meeting_id: str, reque
     """Forward request to Transcription Collector to purge transcripts and anonymize meeting data."""
     url = f"{TRANSCRIPTION_COLLECTOR_URL}/meetings/{platform.value}/{native_meeting_id}"
     return await forward_request(app.state.http_client, "DELETE", url, request)
+
+# --- Summary and Action Items Routes ---
+@app.get("/transcripts/summary/{native_meeting_id}",
+        tags=["Summaries"],
+        summary="Get transcript summary for a meeting",
+        description="Retrieves the transcript and AI-generated summary for a meeting by native ID. Searches across all platforms for the most recent meeting.",
+        response_model=TranscriptionWithSummaryResponse,
+        dependencies=[Depends(api_key_scheme)])
+async def get_transcript_summary_proxy(native_meeting_id: str, request: Request):
+    """Forward request to Transcription Collector to get transcript with summary."""
+    url = f"{TRANSCRIPTION_COLLECTOR_URL}/transcripts/summary/{native_meeting_id}"
+    return await forward_request(app.state.http_client, "GET", url, request)
+
+@app.post("/transcripts/summary/{native_meeting_id}",
+         tags=["Summaries"],
+         summary="Generate or fetch meeting summary",
+         description="Generates a new AI summary or returns existing summary for a meeting by native ID. Integrates with the summarization service.",
+         response_model=SummaryGenerationResponse,
+         dependencies=[Depends(api_key_scheme)],
+         openapi_extra={
+             "requestBody": {
+                 "content": {
+                     "application/json": {
+                         "schema": SummaryGenerationRequest.schema()
+                     }
+                 },
+                 "required": True,
+                 "description": "Summary generation options (force regeneration, include insights, etc.)"
+             },
+         })
+async def generate_transcript_summary_proxy(native_meeting_id: str, request: Request):
+    """Forward request to Transcription Collector to generate or fetch summary."""
+    url = f"{TRANSCRIPTION_COLLECTOR_URL}/transcripts/summary/{native_meeting_id}"
+    return await forward_request(app.state.http_client, "POST", url, request)
+
+@app.get("/summaries/{meeting_id}",
+        tags=["Summaries"],
+        summary="Get summary by meeting ID",
+        description="Retrieves the most recent summary for a specific meeting ID.",
+        response_model=MeetingSummaryResponse,
+        dependencies=[Depends(api_key_scheme)])
+async def get_meeting_summary_proxy(meeting_id: int, request: Request):
+    """Forward request to Transcription Collector to get meeting summary."""
+    url = f"{TRANSCRIPTION_COLLECTOR_URL}/summaries/{meeting_id}"
+    return await forward_request(app.state.http_client, "GET", url, request)
+
+@app.put("/summaries/{summary_id}",
+        tags=["Summaries"],
+        summary="Update a meeting summary",
+        description="Updates an existing meeting summary with new content or metadata.",
+        response_model=MeetingSummaryResponse,
+        dependencies=[Depends(api_key_scheme)],
+        openapi_extra={
+            "requestBody": {
+                "content": {
+                    "application/json": {
+                        "schema": MeetingSummaryUpdate.schema()
+                    }
+                },
+                "required": True,
+                "description": "Summary data to update"
+            },
+        })
+async def update_meeting_summary_proxy(summary_id: int, request: Request):
+    """Forward request to Transcription Collector to update summary."""
+    url = f"{TRANSCRIPTION_COLLECTOR_URL}/summaries/{summary_id}"
+    return await forward_request(app.state.http_client, "PUT", url, request)
+
+@app.get("/action-items",
+        tags=["Action Items"],
+        summary="Get all action items for the user",
+        description="Retrieves all action items for the authenticated user, optionally filtered by status.",
+        response_model=List[ActionItemResponse],
+        dependencies=[Depends(api_key_scheme)])
+async def get_user_action_items_proxy(request: Request):
+    """Forward request to Transcription Collector to get user action items."""
+    url = f"{TRANSCRIPTION_COLLECTOR_URL}/action-items"
+    return await forward_request(app.state.http_client, "GET", url, request)
+
+@app.get("/meetings/{meeting_id}/action-items",
+        tags=["Action Items"],
+        summary="Get action items for a specific meeting",
+        description="Retrieves all action items for a specific meeting ID.",
+        response_model=List[ActionItemResponse],
+        dependencies=[Depends(api_key_scheme)])
+async def get_meeting_action_items_proxy(meeting_id: int, request: Request):
+    """Forward request to Transcription Collector to get meeting action items."""
+    url = f"{TRANSCRIPTION_COLLECTOR_URL}/meetings/{meeting_id}/action-items"
+    return await forward_request(app.state.http_client, "GET", url, request)
+
+@app.post("/meetings/{meeting_id}/action-items",
+         tags=["Action Items"],
+         summary="Create a new action item for a meeting",
+         description="Creates a new action item for a specific meeting.",
+         response_model=ActionItemResponse,
+         status_code=status.HTTP_201_CREATED,
+         dependencies=[Depends(api_key_scheme)],
+         openapi_extra={
+             "requestBody": {
+                 "content": {
+                     "application/json": {
+                         "schema": ActionItemCreate.schema()
+                     }
+                 },
+                 "required": True,
+                 "description": "Action item data to create"
+             },
+         })
+async def create_action_item_proxy(meeting_id: int, request: Request):
+    """Forward request to Transcription Collector to create action item."""
+    url = f"{TRANSCRIPTION_COLLECTOR_URL}/meetings/{meeting_id}/action-items"
+    return await forward_request(app.state.http_client, "POST", url, request)
+
+@app.put("/action-items/{action_item_id}",
+        tags=["Action Items"],
+        summary="Update an action item",
+        description="Updates an existing action item with new content, status, or due date.",
+        response_model=ActionItemResponse,
+        dependencies=[Depends(api_key_scheme)],
+        openapi_extra={
+            "requestBody": {
+                "content": {
+                    "application/json": {
+                        "schema": ActionItemUpdate.schema()
+                    }
+                },
+                "required": True,
+                "description": "Action item data to update"
+            },
+        })
+async def update_action_item_proxy(action_item_id: int, request: Request):
+    """Forward request to Transcription Collector to update action item."""
+    url = f"{TRANSCRIPTION_COLLECTOR_URL}/action-items/{action_item_id}"
+    return await forward_request(app.state.http_client, "PUT", url, request)
+
+@app.delete("/action-items/{action_item_id}",
+          tags=["Action Items"],
+          summary="Delete an action item",
+          description="Deletes an existing action item. This action cannot be undone.",
+          dependencies=[Depends(api_key_scheme)])
+async def delete_action_item_proxy(action_item_id: int, request: Request):
+    """Forward request to Transcription Collector to delete action item."""
+    url = f"{TRANSCRIPTION_COLLECTOR_URL}/action-items/{action_item_id}"
+    return await forward_request(app.state.http_client, "DELETE", url, request)
+
+# --- Internal Routes (for workflows and services) ---
+@app.post("/internal/summaries/{native_meeting_id}",
+          tags=["Internal"],
+          summary="Save pre-generated summary data",
+          description="Internal endpoint for workflows to save pre-generated summary data.",
+          include_in_schema=False,
+          dependencies=[Depends(api_key_scheme)])
+async def save_pre_generated_summary_proxy(native_meeting_id: str, request: Request):
+    """Forward request to Transcription Collector to save pre-generated summary."""
+    url = f"{TRANSCRIPTION_COLLECTOR_URL}/internal/summaries/{native_meeting_id}"
+    return await forward_request(app.state.http_client, "POST", url, request)
 
 # --- User Profile Routes ---
 @app.put("/user/webhook",

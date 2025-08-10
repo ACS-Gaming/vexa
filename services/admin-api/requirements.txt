@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
 email-validator
+httpx
 
 # Shared library dependency - REMOVED (Installed via Dockerfile RUN command)
 # -e ../../libs/shared-models

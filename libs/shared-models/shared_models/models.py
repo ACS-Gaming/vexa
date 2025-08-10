@@ -50,6 +50,9 @@ class Meeting(Base):
     user = relationship("User", back_populates="meetings")
     transcriptions = relationship("Transcription", back_populates="meeting")
     sessions = relationship("MeetingSession", back_populates="meeting", cascade="all, delete-orphan")
+    summaries = relationship("MeetingSummary", back_populates="meeting", cascade="all, delete-orphan")
+    action_items = relationship("ActionItem", back_populates="meeting", cascade="all, delete-orphan")
+    insights = relationship("MeetingInsight", back_populates="meeting", cascade="all, delete-orphan")
 
     # Add composite index for efficient lookup by user, platform, and native ID, including created_at for sorting
     __table_args__ = (
@@ -112,3 +115,66 @@ class MeetingSession(Base):
     meeting = relationship("Meeting", back_populates="sessions") # Define relationship
 
     __table_args__ = (UniqueConstraint('meeting_id', 'session_uid', name='_meeting_session_uc'),) # Ensure unique session per meeting
+
+class MeetingSummary(Base):
+    __tablename__ = "meeting_summaries"
+    id = Column(Integer, primary_key=True, index=True)
+    meeting_id = Column(Integer, ForeignKey("meetings.id"), nullable=False, index=True)
+    summary_data = Column(JSONB, nullable=False)  # Store complete LLM response
+    overview = Column(sqlalchemy.ARRAY(Text), nullable=True)  # 3-5 bullet points
+    subject_line = Column(String(255), nullable=True)  # Email subject line
+    sentiment = Column(String(50), nullable=True)  # positive, negative, neutral
+    key_points = Column(sqlalchemy.ARRAY(Text), nullable=True)
+    decisions = Column(sqlalchemy.ARRAY(Text), nullable=True)
+    questions = Column(sqlalchemy.ARRAY(Text), nullable=True)
+    challenges = Column(sqlalchemy.ARRAY(Text), nullable=True)
+    participants = Column(sqlalchemy.ARRAY(String), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    meeting = relationship("Meeting", back_populates="summaries")
+    action_items = relationship("ActionItem", back_populates="summary", cascade="all, delete-orphan")
+    insights = relationship("MeetingInsight", back_populates="summary", uselist=False)
+
+class ActionItem(Base):
+    __tablename__ = "action_items"
+    id = Column(Integer, primary_key=True, index=True)
+    meeting_id = Column(Integer, ForeignKey("meetings.id"), nullable=False, index=True)
+    summary_id = Column(Integer, ForeignKey("meeting_summaries.id"), nullable=True, index=True)
+    task = Column(Text, nullable=False)
+    description = Column(Text, nullable=True)
+    owner = Column(String(255), nullable=True)  # Name or identifier of assignee
+    assignee_email = Column(String(255), nullable=True)
+    due_date = Column(sqlalchemy.Date, nullable=True)
+    priority = Column(String(20), nullable=True, server_default='medium')  # high, medium, low
+    status = Column(String(20), nullable=False, server_default='pending')  # pending, in_progress, completed, cancelled
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    meeting = relationship("Meeting", back_populates="action_items")
+    summary = relationship("MeetingSummary", back_populates="action_items")
+
+    __table_args__ = (
+        Index('ix_action_items_status', 'status'),
+        Index('ix_action_items_due_date', 'due_date'),
+        Index('ix_action_items_priority', 'priority'),
+    )
+
+class MeetingInsight(Base):
+    __tablename__ = "meeting_insights"
+    id = Column(Integer, primary_key=True, index=True)
+    meeting_id = Column(Integer, ForeignKey("meetings.id"), nullable=False, index=True)
+    summary_id = Column(Integer, ForeignKey("meeting_summaries.id"), nullable=True, index=True)
+    total_speaking_time = Column(Integer, nullable=True)  # in seconds
+    participant_speaking_times = Column(JSONB, nullable=True)  # {"participant": seconds}
+    word_count = Column(Integer, nullable=True)
+    sentiment_scores = Column(JSONB, nullable=True)  # detailed sentiment analysis
+    topics_discussed = Column(sqlalchemy.ARRAY(String), nullable=True)
+    meeting_effectiveness_score = Column(Float, nullable=True)  # 0-100 score
+    engagement_metrics = Column(JSONB, nullable=True)  # various engagement metrics
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    meeting = relationship("Meeting", back_populates="insights")
+    summary = relationship("MeetingSummary", back_populates="insights")

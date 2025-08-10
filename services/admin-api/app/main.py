@@ -2,6 +2,7 @@ import logging
 import secrets
 import string
 import os
+import httpx
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, status, Security, Response
 from fastapi.security import APIKeyHeader
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,7 +15,7 @@ from pydantic import BaseModel, HttpUrl
 
 # Import shared models and schemas
 from shared_models.models import User, APIToken, Base, Meeting, Transcription, MeetingSession # Import Base for init_db and Meeting
-from shared_models.schemas import (UserCreate, UserResponse, TokenResponse, UserDetailResponse, UserBase, UserUpdate, MeetingResponse,
+from shared_models.schemas import (UserCreate, UserResponse, TokenResponse, UserDetailResponse, UserBase, UserUpdate, MeetingResponse, TranscriptionResponse,
                                  UserTableResponse, MeetingTableResponse, MeetingSessionResponse, TranscriptionStats, 
                                  MeetingPerformanceMetrics, MeetingTelematicsResponse, UserMeetingStats, 
                                  UserUsagePatterns, UserAnalyticsResponse) # Import analytics schemas
@@ -165,6 +166,56 @@ async def create_user(user_in: UserCreate, response: Response, db: AsyncSession 
     await db.refresh(db_user)
     logger.info(f"Admin created user: {db_user.email} (ID: {db_user.id})")
     return UserResponse.from_orm(db_user)
+
+@admin_router.get("/meeting_transcripts/{meeting_id}",
+            response_model=TranscriptionResponse,
+            summary="Get transcript of a meeting",
+            description="Fetches the transcript of a meeting by its ID. This endpoint is for admins to retrieve meeting transcripts.")
+async def get_transcript_of_meeting(meeting_id: int, db: AsyncSession = Depends(get_db)):
+    """Admin endpoint to get transcript for any meeting by internal meeting ID."""
+    
+    # Get the transcription collector service URL
+    transcription_service_url = os.getenv("TRANSCRIPTION_COLLECTOR_URL", "http://transcription-collector:8000")
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{transcription_service_url}/internal/transcripts/{meeting_id}")
+            
+            if response.status_code == 404:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Meeting with ID {meeting_id} not found"
+                )
+            elif response.status_code != 200:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to fetch transcript from transcription service: {response.status_code}"
+                )
+                
+            # Get meeting details from database
+            meeting = await db.get(Meeting, meeting_id)
+            if not meeting:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Meeting with ID {meeting_id} not found"
+                )
+            
+            # Parse the transcript segments
+            segments = response.json()
+            
+            # Create response with meeting details and segments
+            meeting_details = MeetingResponse.from_orm(meeting)
+            response_data = meeting_details.dict()
+            response_data["segments"] = segments
+            
+            return TranscriptionResponse(**response_data)
+            
+    except httpx.RequestError as e:
+        logger.error(f"Failed to connect to transcription service: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Transcription service is currently unavailable"
+        )
 
 @admin_router.get("/users", 
             response_model=List[UserResponse], # Use List import
