@@ -18,11 +18,15 @@ async def get_api_key(authorization: Optional[str] = Header(None)) -> str:
     Extract API key from Authorization header.
     Expected format: "YOUR_API_KEY"
     """
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authorization header is required")
     return authorization
 
 
 def get_headers(api_key: str) -> Dict[str, str]:
     """Create headers with the provided API key"""
+    if not api_key:
+        raise ValueError("API key cannot be None or empty")
     return {
         "X-API-Key": api_key,
         "Content-Type": "application/json"
