@@ -141,5 +141,4 @@ test_data/
 *.wav
 *.webm
 *.mp4
-*.txt
 manifest.csv
