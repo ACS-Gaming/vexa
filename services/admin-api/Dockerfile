@@ -5,7 +5,7 @@ FROM python:3.10-slim
 WORKDIR /app
 
 # Install shared library first
-COPY ../../libs/shared-models /app/libs/shared-models
+COPY ./libs/shared-models /app/libs/shared-models
 RUN pip install --no-cache-dir /app/libs/shared-models
 
 # Copy application code and requirements
