@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # --- Copy App Source ---
 # Copy the entire application source code
-COPY ./services/bot-manager/app/ /app/
+COPY ./services/bot-manager/app/ ./app
 
 # Expose the port the app runs on
 EXPOSE 8080
