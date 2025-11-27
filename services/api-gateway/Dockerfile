@@ -6,14 +6,12 @@ WORKDIR /app
 
 # Install shared library first
 #COPY ./libs/shared-models /app/libs/shared-models
-COPY ../../libs/shared-models /app/libs/shared-models
+COPY ./libs/shared-models /app/libs/shared-models
 RUN pip install --no-cache-dir /app/libs/shared-models
 
 # Copy application code and requirements
-#COPY ./services/api-gateway/requirements.txt /app/
-#COPY ./services/api-gateway/main.py /app/
-COPY requirements.txt /app/
-COPY main.py /app/
+COPY ./services/api-gateway/requirements.txt /app/
+COPY ./services/api-gateway/main.py /app/
 
 # Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
