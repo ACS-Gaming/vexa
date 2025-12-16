@@ -223,19 +223,13 @@ export const teamsSpeakingIndicators: string[] = [
 
 // Teams removal/error state indicators
 export const teamsRemovalIndicators: string[] = [
-  // Removal messages
+  // Strong removal/error messages
   'text="You\'ve been removed from this meeting"',
   'text*="You\'ve been removed from this meeting"',
   'text="You have been removed from this meeting"',
   'text*="You have been removed from this meeting"',
   'text="Removed from meeting"',
   'text*="Removed from meeting"',
-  
-  // Removal buttons
-  'button:has-text("Rejoin")',
-  'button:has-text("Dismiss")',
-  'button[aria-label*="Rejoin"]',
-  'button[aria-label*="Dismiss"]',
   
   // Error states
   'text="Meeting ended"',
@@ -268,6 +262,34 @@ export const teamsJoinButtonSelectors: string[] = [
 export const teamsCameraButtonSelectors: string[] = [
   'button[aria-label*="Turn off camera"]',
   'button[aria-label*="Turn on camera"]'
+];
+
+// Teams audio option selectors (pre-join screen)
+export const teamsComputerAudioRadioSelectors: string[] = [
+  'radio[aria-label*="Computer audio"]',
+  'radio:has-text("Computer audio")',
+  '[role="radio"][aria-label*="Computer audio"]'
+];
+
+export const teamsDontUseAudioRadioSelectors: string[] = [
+  'radio[aria-label*="Don\'t use audio"]',
+  'radio:has-text("Don\'t use audio")',
+  '[role="radio"][aria-label*="Don\'t use audio"]'
+];
+
+// Teams speaker toggle selectors
+export const teamsSpeakerEnableSelectors: string[] = [
+  'button[aria-label*="Turn speaker on"]',
+  'button[aria-label*="Speaker is off"]',
+  'button:has-text("Turn speaker on")',
+  'button:has-text("Speaker is off")'
+];
+
+export const teamsSpeakerDisableSelectors: string[] = [
+  'button[aria-label*="Turn speaker off"]',
+  'button[aria-label*="Speaker is on"]',
+  'button:has-text("Turn speaker off")',
+  'button:has-text("Speaker is on")'
 ];
 
 export const teamsNameInputSelectors: string[] = [

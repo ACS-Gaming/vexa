@@ -29,7 +29,7 @@
 
 👉 **Hosted (start in 5 minutes):** https://vexa.ai
 
-👉 **Self-host guide:** [DEPLOYMENT.md](DEPLOYMENT.md)
+👉 **Self-host guide:** [docs/deployment.md](docs/deployment.md)
 
 ---
 
@@ -53,7 +53,7 @@ make all            # CPU by default (Whisper tiny) — good for development
 # make all TARGET=gpu    # (Whisper medium) — recommended for production quality
 ```
 
-* Full guide: [DEPLOYMENT.md](DEPLOYMENT.md)
+* Full guide: [docs/deployment.md](docs/deployment.md)
 * For self-hosted API key: follow `vexa/nbs/0_basic_test.ipynb`
 
 ## 1. Send bot to meeting:
@@ -150,7 +150,6 @@ The Vexa API provides powerful abstractions and a clear separation of concerns, 
 - **Real-time Transcription:** Low-latency, multilingual transcription service is live
 - **Real-time Translation:** Instant translation between 100 supported languages
 - **WebSocket Streaming:** Sub-second transcript delivery via WebSocket API
-- **Pending:** Speaker identification is under development
 
 ## Coming Next
 
@@ -163,7 +162,9 @@ For **security-minded companies**, Vexa offers complete **self-deployment** opti
 
 To run Vexa locally on your own infrastructure, the primary command you'll use after cloning the repository is `make all`. This command sets up the environment (CPU by default, or GPU if specified), builds all necessary Docker images, and starts the services.
 
-Detailed instructions: [Local Deployment and Testing Guide](DEPLOYMENT.md).
+**Deployment & Management Guides:**
+- [Local Deployment and Testing Guide](docs/deployment.md)
+- [Self-Hosted Management Guide](docs/self-hosted-management.md) - Managing users and API tokens
 
 ## Contributing
 

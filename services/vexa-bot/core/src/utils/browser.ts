@@ -39,7 +39,6 @@ export class BrowserAudioService {
       const mediaElements = Array.from(
         document.querySelectorAll("audio, video")
       ).filter((el: any) => 
-        !el.paused && 
         el.srcObject instanceof MediaStream && 
         el.srcObject.getAudioTracks().length > 0
       ) as HTMLMediaElement[];
@@ -287,8 +286,8 @@ export class BrowserWhisperLiveService {
           model: null,
           use_vad: false,
           platform: this.botConfigData.platform,
-          token: this.botConfigData.token,
-          meeting_id: this.botConfigData.nativeMeetingId,
+          token: this.botConfigData.token,  // MeetingToken (HS256 JWT)
+          meeting_id: this.botConfigData.meeting_id,
           meeting_url: this.botConfigData.meetingUrl || null,
         };
 
@@ -326,6 +325,7 @@ export class BrowserWhisperLiveService {
         this.isServerReady = false; // Will be set to true when SERVER_READY received
         
         this.currentUid = generateBrowserUUID();
+        
         const configPayload = {
           uid: this.currentUid,
           language: this.botConfigData.language || null,
@@ -333,8 +333,8 @@ export class BrowserWhisperLiveService {
           model: null,
           use_vad: false,
           platform: this.botConfigData.platform,
-          token: this.botConfigData.token,
-          meeting_id: this.botConfigData.nativeMeetingId,
+          token: this.botConfigData.token,  // MeetingToken (HS256 JWT)
+          meeting_id: this.botConfigData.meeting_id,
           meeting_url: this.botConfigData.meetingUrl || null,
         };
 
@@ -463,9 +463,9 @@ export class BrowserWhisperLiveService {
         participant_id_meet: participantId,
         relative_client_timestamp_ms: relativeTimestampMs,
         uid: this.currentUid,
-        token: botConfigData.token,
+        token: botConfigData.token,  // MeetingToken (HS256 JWT)
         platform: botConfigData.platform,
-        meeting_id: botConfigData.nativeMeetingId,
+        meeting_id: botConfigData.meeting_id,
         meeting_url: botConfigData.meetingUrl
       }
     };
@@ -494,9 +494,9 @@ export class BrowserWhisperLiveService {
         event: event,
         uid: generateBrowserUUID(),
         client_timestamp_ms: Date.now(),
-        token: botConfigData.token,
+        token: botConfigData.token,  // MeetingToken (HS256 JWT)
         platform: botConfigData.platform,
-        meeting_id: botConfigData.nativeMeetingId
+        meeting_id: botConfigData.meeting_id
       }
     };
 
